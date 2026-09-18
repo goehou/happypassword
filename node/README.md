@@ -3,7 +3,8 @@
 本地加密密码库 CLI，模糊搜索，一键复制。零依赖（Node 自带 crypto），无需联网。
 
 ```bash
-npm install -g happypassword
+npm install -g happypassword    # 安装
+npm update -g happypassword     # 更新
 hpw add 名称        # 首次运行会引导你设置主密码
 hpw -c 关键词       # 搜索并复制第一条密码到剪贴板
 ```
@@ -27,4 +28,14 @@ hpw --test          # 自检
 
 平台：Windows / macOS（pbcopy）/ Linux（xclip / wl-copy）。
 
-另有 Python 版与本仓库根 README：https://github.com/
+## Python 版
+
+同一项目的另一实现，功能一致、命令一致，把 `hpw` 换成 `python pw.py` 即可：
+
+```bash
+pip install cryptography        # 唯一依赖，或直接下载打包好的 exe
+python pw.py -c 关键词          # 搜索并复制
+python pw.py --test             # 自检
+```
+
+完整说明（含安全模型、批量导入）见根目录 README：https://github.com/goehou/happypassword

@@ -5,7 +5,7 @@
 ```
 ❯ hpw -c vpn
 主密码: ********
-已复制 '中心vpn' 的密码, 30秒后剪贴板自动清空
+已复制 'vpn' 的密码, 30秒后剪贴板自动清空
 ```
 
 两个实现，功能一致，选一个：
@@ -18,6 +18,29 @@
 | 密码库 | `~/.hpw.vault` | `~/.hpw.vault.json` |
 
 > 两版密码库格式不互通，各自独立存储。
+
+## 安装与更新
+
+**Node 版（零依赖，推荐）：**
+
+```bash
+npm install -g happypassword    # 安装
+npm update -g happypassword     # 更新
+```
+
+**Python 版：**
+
+```bash
+pip install cryptography        # 安装唯一依赖，或直接下载打包好的 exe
+python pw.py --test             # 装完自检
+```
+
+命令与下表用法一致，把 `hpw` 换成 `python pw.py`（或 `hpw.exe`）即可：
+
+```bash
+python pw.py 关键词             # 模糊搜索并显示
+python pw.py -c 关键词          # 搜索并复制第一条密码
+```
 
 ## 用法（两版一致）
 
