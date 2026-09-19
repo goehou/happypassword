@@ -1,6 +1,6 @@
 {
   "name": "happypassword",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "单文件轻量密码管理器：本地 AES-256-GCM 加密存储，模糊搜索，一键复制。零依赖，无需联网。",
   "bin": {
     "hpw": "hpw.js"

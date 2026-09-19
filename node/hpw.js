@@ -19,6 +19,7 @@
  *   hpw passwd            更换主密码
  *   hpw audit             密码体检: 弱密码 / 重复密码
  *   hpw --test            自检 (加密往返、错误密码拒绝、搜索排序、剪贴板、交互流程)
+ *   hpw -v                显示版本号
  *   hpw -help             显示本帮助
  */
 'use strict';
@@ -195,6 +196,13 @@ function copyClipboard(text, clearAfter = 30) {
 async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--test')) return test();
+
+  if (['-v', '--version', 'version'].includes(args[0])) {
+    let v = '?';
+    try { v = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version; } catch {}
+    console.log(`hpw v${v}`);
+    return;
+  }
 
   if (!args.length || ['-h', '--help', '-help', 'help'].includes(args[0])) {
     console.log(fs.readFileSync(__filename, 'utf8').split('/**')[1].split('*/')[0]

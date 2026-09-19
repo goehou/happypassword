@@ -27,6 +27,7 @@ hpw import 文件.txt # 批量导入，每行：名称 [用户名] 密码
 hpw export 文件.txt # 导出为明文 txt，注意保管
 hpw passwd          # 更换主密码
 hpw audit           # 密码体检：弱密码 / 重复密码
+hpw -v              # 查看版本号
 hpw --test          # 自检
 ```
 

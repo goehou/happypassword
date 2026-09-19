@@ -18,6 +18,7 @@
   hpw passwd            更换主密码
   hpw audit             密码体检: 弱密码 / 重复密码
   hpw --test            自检 (加密往返、错误密码拒绝、搜索排序、剪贴板、交互流程)
+  hpw -v                显示版本号
   hpw -help             显示本帮助
 """
 import base64
@@ -35,6 +36,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 VAULT = os.path.join(os.path.expanduser("~"), ".hpw.vault")
+__version__ = "1.1.0"
 # ponytail: scrypt n=2^15 (~100ms 解锁)。嫌慢就降到 2^14, 想更狠就 2^17
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**15, 8, 1
 
@@ -173,6 +175,10 @@ def main():
         # 打包 exe 双击运行时, 跑完即关窗, 停一下让人看完
         if getattr(sys, "frozen", False):
             input("\n按回车退出...")
+        return
+
+    if args[0] in ("-v", "--version", "version"):
+        print(f"hpw v{__version__}")
         return
 
     if args[0] == "gen":
