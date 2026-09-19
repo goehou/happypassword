@@ -7,12 +7,16 @@
 平台: Windows / macOS / Linux
 用法:
   hpw 关键词            模糊搜索并显示条目 (子串/前缀命中排前, 兜底相似度, 阈值 0.5)
-  hpw -c 关键词         搜索并复制第一条密码到剪贴板 (Windows 30秒后自动清空)
+  hpw -c 关键词         搜索并复制第一条密码到剪贴板 (Windows 30秒后恢复剪贴板原值)
   hpw add 名称          添加条目; 密码栏直接回车 = 自动生成 20 位强密码
+  hpw edit 名称         编辑条目, 直接回车保留原值
   hpw ls                列出全部条目名
   hpw rm 名称           删除条目 (支持模糊匹配, 多个命中让你选)
-  hpw gen [长度]        生成指定长度随机密码 (默认 20)
+  hpw gen [长度]        生成随机密码 (8-128 位, 默认 20)
   hpw import 文件.txt   批量导入, 每行: 名称 [用户名] 密码
+  hpw export 文件.txt   导出全部为明文 txt, 注意保管
+  hpw passwd            更换主密码
+  hpw audit             密码体检: 弱密码 / 重复密码
   hpw --test            自检 (加密往返、错误密码拒绝、搜索排序、剪贴板、交互流程)
   hpw -help             显示本帮助
 """
@@ -108,19 +112,27 @@ def search(entries: dict, q: str) -> list:
 
 def copy_clipboard(text: str, clear_after: int = 30):
     if sys.platform == "win32":
+        flags = subprocess.CREATE_NO_WINDOW
+        # 复制前先把原剪贴板存进临时文件 (不经进程边界传文本, 避免编码坑)
+        # 30秒后恢复原值而不是清空, 不破坏用户原有内容; 原值为空才清空
+        orig_tmp = os.path.join(tempfile.mkdtemp(prefix="hpw-"), "orig.txt")
+        subprocess.run(["powershell", "-NoProfile", "-Command",
+                        f"Get-Clipboard -Raw | Set-Content -Path '{orig_tmp}' -Encoding UTF8 -NoNewline"],
+                       check=False, creationflags=flags)
         # ponytail: 走临时文件转编码最稳, 避免管道编码坑
         with tempfile.NamedTemporaryFile("w", encoding="utf-8-sig", delete=False, suffix=".txt") as f:
             f.write(text)
             tmp = f.name
-        flags = subprocess.CREATE_NO_WINDOW
         subprocess.run(["powershell", "-NoProfile", "-Command",
                         f"Set-Clipboard -Value (Get-Content -Raw '{tmp}')"], check=False,
                        creationflags=flags)
-        # 清剪贴板放后台, 不阻塞主进程; 句柄全置 DEVNULL, 避免持有父管道导致调用方挂起
+        # 恢复脚本放后台, 不阻塞主进程; 句柄全置 DEVNULL, 避免持有父管道导致调用方挂起
         subprocess.Popen(["powershell", "-NoProfile", "-Command",
                           f"Start-Sleep {clear_after}; "
-                          "if ((Get-Clipboard -Raw) -eq (Get-Content -Raw '" + tmp + "')) { Set-Clipboard -Value $null }; "
-                          f"Remove-Item '{tmp}'"], creationflags=flags,
+                          "if ((Get-Clipboard -Raw) -eq (Get-Content -Raw '" + tmp + "')) { "
+                          "$v = Get-Content -Raw '" + orig_tmp + "'; "
+                          "if ($v) { Set-Clipboard -Value $v } else { Set-Clipboard -Value $null } }; "
+                          f"Remove-Item '{tmp}', '{orig_tmp}'"], creationflags=flags,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     elif sys.platform == "darwin":
         subprocess.run(["pbcopy"], input=text.encode(), check=False)
@@ -164,7 +176,12 @@ def main():
         return
 
     if args[0] == "gen":
-        print(gen_pw(int(args[1]) if len(args) > 1 else 20))
+        n = 20
+        if len(args) > 1:
+            if not args[1].isdigit():
+                sys.exit("长度要是数字")
+            n = max(8, min(int(args[1]), 128))
+        print(gen_pw(n))
         return
 
     if args[0] == "add":
@@ -183,6 +200,29 @@ def main():
         print(f"已保存, 共 {len(entries)} 条")
         return
 
+    if args[0] == "edit":
+        if len(args) < 2:
+            sys.exit("用法: hpw edit 名称")
+        master, entries = ensure_vault()
+        if not entries:
+            sys.exit("库是空的, 没什么可编辑")
+        hits = search(entries, args[1]) if args[1] not in entries else [args[1]]
+        if not hits:
+            sys.exit("没找到")
+        if len(hits) > 1:
+            print("多个匹配, 选一个: " + " | ".join(hits))
+            return
+        name = hits[0]
+        e = entries[name]
+        print(f"编辑 '{name}', 直接回车保留原值")
+        entries[name] = {"u": input(f"用户名 [{e.get('u','')}]: ").strip() or e.get("u", ""),
+                         "p": getpass.getpass("密码 [回车保留原值]: ") or e["p"],
+                         "note": input(f"备注 [{e.get('note','')}]: ").strip() or e.get("note", "")}
+        save_vault(master, entries)
+        show(name, entries[name])
+        print("已保存")
+        return
+
     if args[0] == "import":
         if len(args) < 2:
             sys.exit("用法: hpw import 文件.txt")
@@ -197,6 +237,49 @@ def main():
                 n += 1
         save_vault(master, entries)
         print(f"已导入 {n} 条, 共 {len(entries)} 条")
+        return
+
+    if args[0] == "passwd":
+        if not os.path.exists(VAULT):
+            sys.exit(f"vault 不存在: {VAULT}，先运行 hpw add 创建")
+        _, entries = ensure_vault()
+        new = ask_master(True)
+        save_vault(new, entries)
+        print(f"主密码已更新, 共 {len(entries)} 条")
+        return
+
+    if args[0] == "export":
+        if len(args) < 2:
+            sys.exit("用法: hpw export 文件.txt")
+        _, entries = ensure_vault()
+        with open(args[1], "w", encoding="utf-8") as f:
+            for name in sorted(entries):
+                e = entries[name]
+                f.write("\t".join(x for x in (name, e.get("u"), e["p"]) if x) + "\n")
+        print(f"已导出 {len(entries)} 条到 {args[1]} (明文, 注意保管)")
+        return
+
+    if args[0] == "audit":
+        _, entries = ensure_vault()
+        if not entries:
+            sys.exit("库是空的, 用 hpw add 名称 添加第一条")
+        weak = sorted(n for n, e in entries.items()
+                      if len(e["p"]) < 12 or e["p"].isdigit() or e["p"].isalpha())
+        dup = {}
+        for n, e in entries.items():
+            dup.setdefault(e["p"], []).append(n)
+        dups = [sorted(v) for v in dup.values() if len(v) > 1]
+        if not weak and not dups:
+            print(f"{len(entries)} 条密码全部健康")
+            return
+        if weak:
+            print("弱密码 (<12位/纯数字/纯字母):")
+            for n in weak:
+                print(f"  {n}")
+        if dups:
+            print("重复密码:")
+            for v in dups:
+                print(f"  {' | '.join(v)}")
         return
 
     if args[0] == "ls":
@@ -240,7 +323,7 @@ def main():
         e = entries[hits[0]]
         acct = f" (账号: {e['u']})" if e.get("u") else ""
         copy_clipboard(e["p"])
-        print(f"已复制 '{hits[0]}' 的密码{acct}, 30秒后剪贴板自动清空")
+        print(f"已复制 '{hits[0]}' 的密码{acct}, 30秒后自动恢复剪贴板原值")
         if len(hits) > 1:
             print("(其他匹配: " + ", ".join(hits[1:5]) + " — 用更精确的关键词)")
     else:
@@ -269,18 +352,20 @@ def test():
     assert search(es, "淘宝") == ["淘宝"]
     # 4. 生成的密码够长且随机
     assert len(gen_pw(20)) == 20 and gen_pw(20) != gen_pw(20)
-    # 5. 剪贴板: 复制立即生效, 延迟后清空 (仅 Windows, 其他平台无 powershell)
+    # 5. 剪贴板: 复制立即生效, 延迟后恢复原值 (仅 Windows, 其他平台无 powershell)
     if sys.platform == "win32":
+        subprocess.run(["powershell", "-NoProfile", "-Command", "Set-Clipboard -Value 'hpw-test-orig'"],
+                       creationflags=subprocess.CREATE_NO_WINDOW)
         copy_clipboard("clip-test-123", clear_after=2)
         import time
         time.sleep(1)  # 等后台进程把复制做完
         out = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
                              capture_output=True, text=True, encoding="utf-8").stdout.strip()
         assert out == "clip-test-123", f"剪贴板内容异常: {out!r}"
-        time.sleep(2.5)  # 超过 clear_after, 应已清空
+        time.sleep(2.5)  # 超过 clear_after, 应已恢复原值
         out2 = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
                               capture_output=True, text=True, encoding="utf-8").stdout.strip()
-        assert out2 == "", f"剪贴板未自动清空: {out2!r}"
+        assert out2 == "hpw-test-orig", f"剪贴板未恢复原值: {out2!r}"
     # 6. 交互流程: add → 搜索 → rm (mock 输入, 不碰真实 vault)
     import builtins
     real_input = builtins.input
@@ -312,6 +397,88 @@ def test():
         sys.argv = real_argv
         VAULT = real_vault
         builtins.input = real_input
+        getpass.getpass = real_getpass
+
+    # 7. gen 长度 clamp: 下限 8, 上限 128
+    real_argv = sys.argv
+    real_stdout = sys.stdout
+    try:
+        for argv, n in ((["gen", "3"], 8), (["gen", "999"], 128), (["gen"], 20)):
+            sys.argv = ["pw.py"] + argv
+            buf = io.StringIO()
+            sys.stdout = buf
+            try:
+                main()
+            finally:
+                sys.stdout = real_stdout
+            got = len(buf.getvalue().strip())
+            assert got == n, f"gen clamp 失效: {argv} → {got} 位"
+    finally:
+        sys.argv = real_argv
+
+    # 8. export → import 往返, 密码一致
+    builtins.input = lambda *a, **k: ""
+    getpass.getpass = lambda *a, **k: "epw"
+    real_vault = VAULT
+    try:
+        VAULT = os.path.join(tempfile.mkdtemp(), "export.vault")
+        save_vault("epw", {"git": {"u": "a", "p": "s3cret!x", "note": ""},
+                           "wx": {"u": "", "p": "wx!pass12345", "note": ""}})
+        exp_file = os.path.join(tempfile.mkdtemp(), "out.txt")
+        sys.argv = ["pw.py", "export", exp_file]
+        buf = io.StringIO()
+        sys.stdout = buf
+        try:
+            main()
+        finally:
+            sys.stdout = real_stdout
+        assert "已导出" in buf.getvalue(), buf.getvalue()
+        VAULT = os.path.join(tempfile.mkdtemp(), "import.vault")
+        sys.argv = ["pw.py", "import", exp_file]
+        buf = io.StringIO()
+        sys.stdout = buf
+        try:
+            main()
+        finally:
+            sys.stdout = real_stdout
+        got = load_vault("epw")
+        assert got["git"]["p"] == "s3cret!x" and got["git"]["u"] == "a", got
+        assert got["wx"]["p"] == "wx!pass12345" and got["wx"]["u"] == "", got
+    finally:
+        sys.argv = real_argv
+        VAULT = real_vault
+        getpass.getpass = real_getpass
+
+    # 9. audit: 弱密码 / 重复密码检测
+    getpass.getpass = lambda *a, **k: "epw"
+    try:
+        VAULT = os.path.join(tempfile.mkdtemp(), "audit.vault")
+        save_vault("epw", {"a": {"u": "", "p": "Str0ng!Pass#9", "note": ""},
+                           "b": {"u": "", "p": "Str0ng!Pass#9", "note": ""},
+                           "c": {"u": "", "p": "short1", "note": ""}})
+        sys.argv = ["pw.py", "audit"]
+        buf = io.StringIO()
+        sys.stdout = buf
+        try:
+            main()
+        finally:
+            sys.stdout = real_stdout
+        out = buf.getvalue()
+        assert "重复" in out and "a" in out and "b" in out, f"audit 缺重复检测: {out!r}"
+        assert "弱密码" in out and "c" in out, f"audit 缺弱密码检测: {out!r}"
+        VAULT = os.path.join(tempfile.mkdtemp(), "audit2.vault")
+        save_vault("epw", {"ok": {"u": "", "p": "Str0ng!Pass#9", "note": ""}})
+        sys.argv = ["pw.py", "audit"]
+        buf = io.StringIO()
+        sys.stdout = buf
+        try:
+            main()
+        finally:
+            sys.stdout = real_stdout
+        assert "全部健康" in buf.getvalue(), buf.getvalue()
+    finally:
+        sys.argv = real_argv
+        VAULT = real_vault
         getpass.getpass = real_getpass
     print("ALL TESTS PASSED")
 

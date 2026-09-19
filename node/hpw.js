@@ -8,12 +8,16 @@
  *
  * 用法:
  *   hpw 关键词            模糊搜索并显示条目 (子串/前缀命中排前, 兜底相似度, 阈值 0.5)
- *   hpw -c 关键词         搜索并复制第一条密码到剪贴板 (Windows 30秒后自动清空)
+ *   hpw -c 关键词         搜索并复制第一条密码到剪贴板 (Windows 30秒后恢复剪贴板原值)
  *   hpw add 名称          添加条目; 密码栏直接回车 = 自动生成 20 位强密码
+ *   hpw edit 名称         编辑条目, 直接回车保留原值
  *   hpw ls                列出全部条目名
  *   hpw rm 名称           删除条目 (支持模糊匹配, 多个命中让你选)
- *   hpw gen [长度]        生成指定长度随机密码 (默认 20)
+ *   hpw gen [长度]        生成随机密码 (8-128 位, 默认 20)
  *   hpw import 文件.txt   批量导入, 每行: 名称 [用户名] 密码
+ *   hpw export 文件.txt   导出全部为明文 txt, 注意保管
+ *   hpw passwd            更换主密码
+ *   hpw audit             密码体检: 弱密码 / 重复密码
  *   hpw --test            自检 (加密往返、错误密码拒绝、搜索排序、剪贴板、交互流程)
  *   hpw -help             显示本帮助
  */
@@ -162,13 +166,17 @@ function copyClipboard(text, clearAfter = 30) {
     // ponytail: 走临时文件转编码最稳, 避免管道编码坑
     const tmp = path.join(os.tmpdir(), `hpw-${Date.now()}.txt`);
     fs.writeFileSync(tmp, '\ufeff' + text, 'utf8');
+    // 复制前先把原剪贴板存到临时文件, 30秒后恢复原值而不是清空 (原值为空才清空)
+    const orig = path.join(os.tmpdir(), `hpw-orig-${Date.now()}.txt`);
+    spawnSync('powershell', ['-NoProfile', '-Command',
+      `Get-Clipboard -Raw | Set-Content -Path '${orig}' -Encoding UTF8 -NoNewline`], { windowsHide: true });
     spawnSync('powershell', ['-NoProfile', '-Command', `Set-Clipboard -Value (Get-Content -Raw '${tmp}')`],
       { windowsHide: true });
-    // 清剪贴板脚本写成 ps1, Start-Process 起完全独立进程, 主进程退出后照样跑。
+    // 恢复脚本写成 ps1, Start-Process 起完全独立进程, 主进程退出后照样跑。
     // ponytail: spawn detached 在 Windows 上父进程退出会被提前终止; ExecutionPolicy 要放进 -ArgumentList
     const ps1 = path.join(os.tmpdir(), `hpw-clear-${Date.now()}.ps1`);
     fs.writeFileSync(ps1,
-      `Start-Sleep ${clearAfter}; if ((Get-Clipboard -Raw) -eq (Get-Content -Raw '${tmp}')) { Set-Clipboard -Value $null }; Remove-Item '${tmp}', '${ps1}'`);
+      `Start-Sleep ${clearAfter}; if ((Get-Clipboard -Raw) -eq (Get-Content -Raw '${tmp}')) { $v = Get-Content -Raw '${orig}'; if ($v) { Set-Clipboard -Value $v } else { Set-Clipboard -Value $null } }; Remove-Item '${tmp}', '${orig}', '${ps1}'`);
     spawnSync('powershell', ['-NoProfile', '-Command',
       `Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${ps1}'`],
       { windowsHide: true });
@@ -195,7 +203,13 @@ async function main() {
   }
 
   if (args[0] === 'gen') {
-    console.log(genPw(parseInt(args[1], 10) || 20));
+    let n = 20;
+    if (args[1]) {
+      n = parseInt(args[1], 10);
+      if (isNaN(n)) die('长度要是数字');
+      n = Math.max(8, Math.min(n, 128));
+    }
+    console.log(genPw(n));
     return;
   }
 
@@ -217,6 +231,27 @@ async function main() {
     return;
   }
 
+  if (args[0] === 'edit') {
+    if (!args[1]) die('用法: hpw edit 名称');
+    const [master, entries] = await ensureVault();
+    if (!Object.keys(entries).length) die('库是空的, 没什么可编辑');
+    const hits = args[1] in entries ? [args[1]] : search(entries, args[1]);
+    if (!hits.length) die('没找到');
+    if (hits.length > 1) { console.log('多个匹配, 选一个: ' + hits.join(' | ')); return; }
+    const name = hits[0];
+    const e = entries[name];
+    console.log(`编辑 '${name}', 直接回车保留原值`);
+    entries[name] = {
+      u: (await ask(`用户名 [${e.u || '无'}]: `)) || e.u || '',
+      p: (await ask('密码 [回车保留原值]: ', true)) || e.p,
+      note: (await ask(`备注 [${e.note || '无'}]: `)) || e.note || '',
+    };
+    saveVault(master, entries);
+    show(name, entries[name]);
+    console.log('已保存');
+    return;
+  }
+
   if (args[0] === 'import') {
     if (!args[1]) die('用法: hpw import 文件.txt');
     const [master, entries] = await ensureVault();
@@ -233,6 +268,52 @@ async function main() {
     }
     saveVault(master, entries);
     console.log(`已导入 ${n} 条, 共 ${Object.keys(entries).length} 条`);
+    return;
+  }
+
+  if (args[0] === 'passwd') {
+    if (!fs.existsSync(VAULT)) die(`vault 不存在: ${VAULT}，先运行 hpw add 创建`);
+    const [, entries] = await ensureVault();
+    const m = await ask('新主密码: ', true);
+    if (!m) die('主密码不能为空');
+    const m2 = await ask('再输一遍: ', true);
+    if (m !== m2) die('两次不一致');
+    saveVault(m, entries);
+    console.log(`主密码已更新, 共 ${Object.keys(entries).length} 条`);
+    return;
+  }
+
+  if (args[0] === 'export') {
+    if (!args[1]) die('用法: hpw export 文件.txt');
+    const [, entries] = await ensureVault();
+    const lines = Object.keys(entries).sort().map((name) => {
+      const e = entries[name];
+      return [name, e.u, e.p].filter(Boolean).join('\t');
+    });
+    fs.writeFileSync(args[1], lines.join('\n') + '\n');
+    console.log(`已导出 ${Object.keys(entries).length} 条到 ${args[1]} (明文, 注意保管)`);
+    return;
+  }
+
+  if (args[0] === 'audit') {
+    const [, entries] = await ensureVault();
+    if (!Object.keys(entries).length) die('库是空的, 用 hpw add 名称 添加第一条');
+    const weak = Object.keys(entries).filter((n) => {
+      const p = entries[n].p;
+      return p.length < 12 || /^\d+$/.test(p) || /^[a-zA-Z]+$/.test(p);
+    }).sort();
+    const byPass = {};
+    for (const n of Object.keys(entries)) (byPass[entries[n].p] = byPass[entries[n].p] || []).push(n);
+    const dups = Object.values(byPass).filter((v) => v.length > 1).map((v) => v.sort());
+    if (!weak.length && !dups.length) { console.log(`${Object.keys(entries).length} 条密码全部健康`); return; }
+    if (weak.length) {
+      console.log('弱密码 (<12位/纯数字/纯字母):');
+      for (const n of weak) console.log(`  ${n}`);
+    }
+    if (dups.length) {
+      console.log('重复密码:');
+      for (const v of dups) console.log(`  ${v.join(' | ')}`);
+    }
     return;
   }
 
@@ -273,14 +354,14 @@ async function main() {
   if (copyMode) {
     copyClipboard(entries[hits[0]].p);
     const acct = entries[hits[0]].u ? ` (账号: ${entries[hits[0]].u})` : '';
-    console.log(`已复制 '${hits[0]}' 的密码${acct}, 30秒后剪贴板自动清空`);
+    console.log(`已复制 '${hits[0]}' 的密码${acct}, 30秒后自动恢复剪贴板原值`);
     if (hits.length > 1) console.log('(其他匹配: ' + hits.slice(1, 5).join(', ') + ' — 用更精确的关键词)');
   } else {
     for (const name of hits.slice(0, 10)) show(name, entries[name]);
   }
 }
 
-function test() {
+async function test() {
   // 自检: 加密往返 + 错误主密码 + 搜索 + 生成。不碰真实 vault。
   const tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), 'hpwtest-'));
   const testVault = path.join(tmpdir, 'test.vault.json');
@@ -317,6 +398,21 @@ function test() {
   const out = (r.stdout || '') + (r.stderr || '');
   if (!(out.includes('vault 不存在') || out.includes('主密码错误') || out.includes('库是空的')))
     throw new Error('ask 管道读入失败: ' + out);
+  // 6. gen 长度 clamp: 下限 8, 上限 128
+  const realArgv = process.argv;
+  const realLog = console.log;
+  try {
+    let got = '';
+    console.log = (s) => { got = s; };
+    for (const [argv, n] of [[['gen', '3'], 8], [['gen', '999'], 128], [['gen'], 20]]) {
+      process.argv = ['node', 'hpw.js', ...argv];
+      await main();
+      if (got.length !== n) throw new Error(`gen clamp 失效: ${argv.join(' ')} → ${got.length} 位`);
+    }
+  } finally {
+    process.argv = realArgv;
+    console.log = realLog;
+  }
   console.log('ALL TESTS PASSED');
 }
 

@@ -19,10 +19,14 @@ hpw -c 关键词       # 搜索并复制第一条密码到剪贴板
 
 ```bash
 hpw 关键词          # 模糊搜索并显示
-hpw -c 关键词       # 搜索并复制第一条密码（Windows 30s 后自动清空剪贴板）
+hpw -c 关键词       # 搜索并复制（Windows 30s 后恢复剪贴板原值）
 hpw add 名称        # 添加（密码栏回车 = 自动生成 20 位强密码）
-hpw ls / rm / gen   # 列表 / 删除 / 生成随机密码
+hpw edit 名称       # 编辑条目（回车保留原值）
+hpw ls / rm / gen   # 列表 / 删除 / 生成随机密码（8-128 位）
 hpw import 文件.txt # 批量导入，每行：名称 [用户名] 密码
+hpw export 文件.txt # 导出为明文 txt，注意保管
+hpw passwd          # 更换主密码
+hpw audit           # 密码体检：弱密码 / 重复密码
 hpw --test          # 自检
 ```
 
